@@ -5,6 +5,8 @@ import ScriptingHelpers
 
 enum AMError: Error {
   case osVersion
+  case noPrefix
+  case noFiles
 }
 
 struct AudiobookMetadata: ParsableCommand {
@@ -38,17 +40,40 @@ struct AudiobookMetadata: ParsableCommand {
 
   func run() throws {
     let audiofileCount: Int
+    let filePrefixLength: Int
     let coverArtPath: String
     if #available(macOS 13.0, *) {
       let fileLines = shell("ls \(inputDir)").asString
         .split(separator: "\n")
 
+      guard !fileLines.isEmpty else {
+        throw AMError.noFiles
+      }
+
       // Count audiofiles with expected filename format
-      let filenameRegex = try Regex("\\d\\d\\d_.*.\(`extension`)")
+      let filenameRegex = try Regex("\\d+_.*.\(`extension`)")
       audiofileCount = fileLines
         .filter { $0.wholeMatch(of: filenameRegex) != nil }
         .count
       print("Audiofile count: \(audiofileCount)", verbose: verbose)
+
+      // Get length of file number (typically 2 or 3 digits)
+      let filePrefixRef = Reference(Substring.self)
+      let filePrefixRegex = Regex {
+        Capture(as: filePrefixRef) {
+          OneOrMore(.digit)
+        }
+        "_"
+        Capture {
+          OneOrMore(.word)
+        }
+      }
+      if let filePrefixMatch = fileLines[0].firstMatch(of: filePrefixRegex) {
+        filePrefixLength = filePrefixMatch[filePrefixRef].count
+      } else {
+        throw AMError.noPrefix
+      }
+      print("File number length: \(filePrefixLength)", verbose: verbose)
 
       // Get cover art path from inputDir
       let coverArtRegex = try Regex(".*.(jpg|gif|png)")
@@ -63,14 +88,14 @@ struct AudiobookMetadata: ParsableCommand {
 
     // Update audiobook metadata for each audiofile
     for i in 1 ... audiofileCount {
-      let fileNumber = String(format: "%03d", i)
+      let fileNumber = String(format: "%0\(filePrefixLength)d", i)
       let filename = "\(fileNumber)\(suffix)"
       let oldFilePath = "\(inputDir)/\(filename).\(`extension`)"
       let newFilePath: String
       if let outputDir = outputDir, outputDir != inputDir {
         newFilePath = "\(outputDir)/\(filename).\(`extension`)"
         // Create directory if a unique output dir is provided
-        let mkdirOutput = shell("mkdir \(outputDir)").asString
+        let mkdirOutput = shell("mkdir -p \(outputDir)").asString
         print(mkdirOutput, verbose: verbose)
       } else {
         newFilePath = "\(inputDir)/\(filename)_new.\(`extension`)"
@@ -89,7 +114,7 @@ struct AudiobookMetadata: ParsableCommand {
         "-metadata artist='\(author)'",
         "-metadata genre='audiobook'",
         "-metadata track='\(fileNumber)'",
-        newFilePath
+        newFilePath,
       ].joined(separator: " ")
       let updateResult = shell(updateCommand)
       if case .success = updateResult {
